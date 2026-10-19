@@ -28,6 +28,14 @@ Not implemented. The supplied API contract documents email/password login and re
 - Periodic scans also re-enqueue idle pending folder-watch batches if the app stopped between saving queue rows and scheduling upload work.
 - Added policy and persistence tests; they have not been executed in this environment.
 
-## Phases 5–6 — USB/OTG and release signing
+## Phase 5 — Sony USB/OTG continuation
 
-USB/OTG camera transport remains unsupported. The Android project has no verified USB PTP adapter, and no physical camera/OTG device is available here. The app and README do not claim USB support. Release signing remains unconfigured because there is no user-owned release keystore in the workspace; the release build and signing path also cannot be verified without an Android SDK. See `TEST_REPORT.md`.
+- Added a Sony USB/PTP library module backed by the supplied Sony camera-control source, with one foreground-service owner for USB permissions, session lifecycle, connection state, PTP events, card metadata, thumbnails, and streamed originals.
+- Integrated USB and Wi-Fi into the existing Camera screen, folder browser, saved transport-aware queue, private original staging, and existing upload/import workers. Added storage selection, clickable breadcrumbs, explicit gallery save, guarded Auto Upload baseline/deduplication, and safe disconnect/transport-switch behavior during active transfers.
+- USB discovery now requires a Sony vendor ID and a PTP-compatible interface with both bulk IN and bulk OUT endpoints. The activity forwards USB reattach intents to the single connection service.
+- Added pure tests for USB endpoint matching, PTP card parsing, supported formats, Auto Upload baseline/deduplication persistence, and version-7 queue upgrade preservation.
+- No physical Android phone, OTG adapter, Sony camera, WED Faces server, or Android SDK was available for this continuation. USB connection, PTP event behavior, physical-shutter detection, Gallery writes, compilation, tests, and lint remain unverified here. The reference project's README reports α6600 testing, but this app has not been physically validated against it.
+
+## Phase 6 — Release signing
+
+Release signing remains unconfigured because there is no user-owned release keystore in the workspace. Do not ship an unsigned release APK or reuse a debug key as a production signing key. See `TEST_REPORT.md`.

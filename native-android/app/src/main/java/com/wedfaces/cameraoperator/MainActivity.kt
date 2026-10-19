@@ -2,7 +2,10 @@ package com.wedfaces.cameraoperator
 
 import android.Manifest
 import android.app.Activity
+import android.content.Intent
 import android.graphics.BitmapFactory
+import android.hardware.usb.UsbDevice
+import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -29,6 +32,7 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
@@ -91,6 +95,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.wedfaces.cameraoperator.model.CameraFileSupport
 import com.wedfaces.cameraoperator.model.CameraPhoto
 import com.wedfaces.cameraoperator.model.CameraTransportType
 import com.wedfaces.cameraoperator.model.PhotoSource
@@ -105,6 +110,7 @@ private val Line = Color(0xFFD6D6D6)
 class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        forwardUsbAttach(intent)
         setContent {
             MaterialTheme(
                 colorScheme = darkColorScheme(
@@ -121,6 +127,25 @@ class MainActivity : ComponentActivity() {
             ) {
                 CameraOperatorRoot()
             }
+        }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        forwardUsbAttach(intent)
+    }
+
+    @Suppress("DEPRECATION")
+    private fun forwardUsbAttach(intent: Intent?) {
+        if (intent?.action != UsbManager.ACTION_USB_DEVICE_ATTACHED) return
+        val device: UsbDevice? = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE, UsbDevice::class.java)
+        } else {
+            intent.getParcelableExtra(UsbManager.EXTRA_DEVICE)
+        }
+        if (device != null) {
+            (application as CameraOperatorApp).services.usbCameraClient.onUsbDeviceAttached(device)
         }
     }
 }
@@ -258,6 +283,7 @@ private fun CameraOperatorRoot(viewModel: AppViewModel = viewModel()) {
                     onSelectStorage = viewModel::selectCameraStorage,
                     onOpenFolder = viewModel::openCameraFolder,
                     onGoUp = viewModel::navigateCameraUp,
+                    onNavigateToFolder = viewModel::navigateCameraToPath,
                     onSelectFolder = viewModel::selectCurrentFolderRecursively,
                     onPreview = viewModel::previewPhoto,
                     onClosePreview = viewModel::closePhotoPreview,
@@ -365,6 +391,7 @@ private fun CameraScreen(
     onSelectStorage: (String) -> Unit,
     onOpenFolder: (CameraPhoto) -> Unit,
     onGoUp: () -> Unit,
+    onNavigateToFolder: (Int) -> Unit,
     onSelectFolder: () -> Unit,
     onPreview: (CameraPhoto) -> Unit,
     onClosePreview: () -> Unit,
@@ -383,6 +410,9 @@ private fun CameraScreen(
     val visiblePhotos = state.visibleCameraPhotos()
     val visibleFolders = state.photos.filter { it.isFolder }
     val canSend = state.signedIn && state.selectedAlbumId != null && state.selectedPhotoIds.isNotEmpty() && !state.busy
+    val cameraTransferInProgress = state.queue.any {
+        it.source == PhotoSource.CAMERA && it.state == QueueState.DOWNLOADING
+    }
 
     Column(Modifier.fillMaxSize().padding(horizontal = 16.dp)) {
         Card(
@@ -430,13 +460,24 @@ private fun CameraScreen(
                         OutlinedButton(onClick = onRefresh, modifier = Modifier.weight(1f)) {
                             Icon(Icons.Default.Refresh, null, Modifier.size(17.dp)); Spacer(Modifier.width(6.dp)); Text("Refresh")
                         }
-                        OutlinedButton(onClick = onDisconnect, modifier = Modifier.weight(1f)) {
+                        OutlinedButton(
+                            onClick = onDisconnect,
+                            modifier = Modifier.weight(1f),
+                            enabled = !state.cameraBusy && !cameraTransferInProgress,
+                        ) {
                             Text("Disconnect")
                         }
                     }
+                    if (cameraTransferInProgress) {
+                        Text(
+                            "Stop the active camera batch from Queue before disconnecting.",
+                            fontSize = 12.sp,
+                            color = Muted,
+                        )
+                    }
                     if (state.cameraStorages.isNotEmpty()) {
                         Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                            Text("Storage", color = Color(0xFFBDBDBD), fontSize = 12.sp)
+                            Text("Storage/Card", color = Color(0xFFBDBDBD), fontSize = 12.sp)
                             Box {
                                 OutlinedButton(onClick = { storageMenu = true }) {
                                     Text(state.cameraStorages.firstOrNull { it.id == state.selectedStorageId }?.name ?: "Select card")
@@ -450,28 +491,32 @@ private fun CameraScreen(
                                     }
                                 }
                             }
-                            if (state.folderPath.isNotEmpty()) {
-                                TextButton(onClick = onGoUp) { Text("Up") }
-                            }
+                            TextButton(onClick = onGoUp, enabled = state.folderPath.isNotEmpty()) { Text("Back/Up") }
                         }
                         if (state.folderPath.isNotEmpty()) {
-                            Text(
-                                "Card / " + state.folderPath.joinToString(" / ") { it.fileName },
-                                color = Color(0xFFBDBDBD),
-                                fontSize = 11.sp,
-                                maxLines = 1,
-                            )
+                            Row(
+                                modifier = Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                TextButton(onClick = { onNavigateToFolder(0) }) { Text("Card") }
+                                state.folderPath.forEachIndexed { index, folder ->
+                                    Text("/", color = Muted)
+                                    TextButton(onClick = { onNavigateToFolder(index + 1) }) {
+                                        Text(folder.fileName, maxLines = 1)
+                                    }
+                                }
+                            }
                         }
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
                             OutlinedButton(onClick = onSelectFolder, modifier = Modifier.weight(1f)) {
-                                Text("Select this folder")
+                                Text("Select Folder")
                             }
                         }
                     }
                     if (state.cameraTransport == CameraTransportType.USB) {
                         SettingSwitch(
                             title = "Auto Upload",
-                            detail = "Upload new supported images after shutter events. Existing card images are baseline-skipped.",
+                            detail = "Upload newly detected supported originals. Camera-body physical-shutter detection is not verified here.",
                             checked = state.autoUploadEnabled,
                             onCheckedChange = onAutoUpload,
                             enabled = !state.autoUploadEnabled ||
@@ -489,13 +534,13 @@ private fun CameraScreen(
                         OutlinedButton(onClick = onRescanUsb, modifier = Modifier.weight(1f)) { Text("Rescan USB") }
                         Button(
                             onClick = onConnectUsb,
-                            enabled = !state.cameraBusy && state.usbHostSupported,
+                            enabled = !state.cameraBusy && state.usbHostSupported && state.usbDetected,
                             modifier = Modifier.weight(1f),
                         ) { Text("Connect USB Camera") }
                     }
                     SettingSwitch(
                         title = "Auto Upload",
-                        detail = "Sign in, choose an album, then connect by USB to enable. Existing card images are baseline-skipped.",
+                        detail = "Sign in, choose an album, then connect by USB. Existing card images are baseline-skipped.",
                         checked = state.autoUploadEnabled,
                         onCheckedChange = onAutoUpload,
                         enabled = true,
@@ -628,7 +673,7 @@ private fun CameraScreen(
         ) {
             Icon(Icons.Default.CloudUpload, null)
             Spacer(Modifier.width(8.dp))
-            Text(if (state.busy) "Preparing originals…" else "Send selected · ${state.selectedPhotoIds.size}")
+            Text(if (state.busy) "Preparing originals…" else "Upload Selected (${state.selectedPhotoIds.size})")
         }
         state.previewPhoto?.let { photo ->
             CameraPhotoPreviewDialog(
@@ -691,7 +736,7 @@ private fun PhotoTile(
             color = Muted,
             fontSize = 9.sp,
         )
-        val supported = photo.fileName.substringAfterLast('.', "").lowercase() in setOf("jpg", "jpeg", "png", "webp")
+        val supported = CameraFileSupport.isSupported(photo.fileName)
         Row(verticalAlignment = Alignment.CenterVertically) {
             Text(
                 if (supported) (photo.mimeType ?: "Image") else "Unsupported",
@@ -719,7 +764,7 @@ private fun CameraPhotoPreviewDialog(
     val bitmap = remember(thumbnailBytes) {
         thumbnailBytes?.let { BitmapFactory.decodeByteArray(it, 0, it.size)?.asImageBitmap() }
     }
-    val supported = photo.fileName.substringAfterLast('.', "").lowercase() in setOf("jpg", "jpeg", "png", "webp")
+    val supported = CameraFileSupport.isSupported(photo.fileName)
     AlertDialog(
         onDismissRequest = onClose,
         title = { Text(photo.fileName, maxLines = 2) },
@@ -756,7 +801,7 @@ private fun CameraPhotoPreviewDialog(
                 TextButton(onClick = onToggle, enabled = supported) {
                     Text(if (selected) "Unselect" else "Select")
                 }
-                TextButton(onClick = onUpload, enabled = supported) { Text("Upload now") }
+                TextButton(onClick = onUpload, enabled = supported) { Text("Upload Now") }
                 TextButton(onClick = onSaveToPhone, enabled = supported && photo.source == PhotoSource.CAMERA) {
                     Text("Save to Phone")
                 }

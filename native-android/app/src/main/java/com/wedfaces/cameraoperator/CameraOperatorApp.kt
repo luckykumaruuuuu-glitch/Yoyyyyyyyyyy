@@ -18,7 +18,6 @@ import com.wedfaces.cameraoperator.data.SettingsRepository
 import com.wedfaces.cameraoperator.data.TokenStore
 import com.wedfaces.cameraoperator.data.TransferQueueRepository
 import com.wedfaces.cameraoperator.network.WedFacesApi
-import com.wedfaces.cameraoperator.model.CameraTransportType
 import com.wedfaces.cameraoperator.model.TransferItem
 import io.github.gallo.sonycamera.service.CameraConnectionClient
 import java.io.File
@@ -68,11 +67,17 @@ class AppServices(
         destination: File,
         onProgress: (sent: Long, total: Long) -> Unit,
     ) {
-        when (item.transportType) {
-            CameraTransportType.USB -> usbCamera.downloadOriginal(item.sourceObjectId, destination, onProgress)
-            CameraTransportType.WIFI -> camera.downloadSelectedOriginal(item.sourceObjectId, destination, onProgress)
-            CameraTransportType.NONE -> throw IllegalStateException("This queue item has no camera transport.")
-        }
+        routeCameraOriginal(
+            item = item,
+            destination = destination,
+            onUsb = { queued, file, progress ->
+                usbCamera.downloadOriginal(queued.sourceObjectId, file, progress)
+            },
+            onWifi = { queued, file, progress ->
+                camera.downloadSelectedOriginal(queued.sourceObjectId, file, progress)
+            },
+            onProgress = onProgress,
+        )
     }
 
     fun enqueueBatch(batchId: String) {

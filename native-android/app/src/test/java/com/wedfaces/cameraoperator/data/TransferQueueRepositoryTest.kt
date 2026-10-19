@@ -4,6 +4,7 @@ import android.app.Application
 import android.content.ContentValues
 import android.database.sqlite.SQLiteDatabase
 import android.database.sqlite.SQLiteOpenHelper
+import com.wedfaces.cameraoperator.model.CameraTransportType
 import com.wedfaces.cameraoperator.model.ImportStatus
 import com.wedfaces.cameraoperator.model.ImportFileResult
 import com.wedfaces.cameraoperator.model.PhotoSource
@@ -101,6 +102,131 @@ class TransferQueueRepositoryTest {
             assertEquals(1, repository.getAll().size)
         } finally {
             repository.close()
+            context.deleteDatabase(databaseName)
+        }
+    }
+
+    @Test
+    fun autoUploadBaselineSkipsOldObjectsAndDeduplicatesRepeatedEventsAcrossReopen() {
+        val context = RuntimeEnvironment.getApplication()
+        val databaseName = "camera_operator_auto_upload_test.db"
+        context.deleteDatabase(databaseName)
+        var repository = TransferQueueRepository(context, databaseName)
+        val cameraIdentity = "Sony ILCE-6600#serial-1"
+        val oldObject = "storage-1\u0000handle-10\u0000old.jpg"
+        val newObject = "storage-1\u0000handle-11\u0000new.jpg"
+        val item = TransferQueueRepository.newTransfer(
+            batchId = "auto-batch-one",
+            albumId = "selected-album",
+            albumName = "Wedding",
+            source = PhotoSource.CAMERA,
+            sourceObjectId = "1:11",
+            fileName = "new.jpg",
+            mimeType = "image/jpeg",
+            sizeBytes = 2048L,
+            initialState = QueueState.DOWNLOADING,
+            transportType = CameraTransportType.USB,
+        )
+        try {
+            repository.setAutoUploadBaseline(cameraIdentity, listOf(oldObject))
+            assertTrue(repository.hasAutoUploadBaseline(cameraIdentity))
+            assertTrue(repository.isInAutoUploadBaseline(cameraIdentity, oldObject))
+            assertFalse(repository.isInAutoUploadBaseline(cameraIdentity, newObject))
+            assertTrue(repository.insertAutoUploadIfNew(item, cameraIdentity, newObject))
+            repository.close()
+
+            repository = TransferQueueRepository(context, databaseName)
+            assertFalse(repository.insertAutoUploadIfNew(item.copy(
+                id = "duplicate-transfer",
+                uploadId = "duplicate-upload",
+                batchId = "auto-batch-two",
+            ), cameraIdentity, newObject))
+            assertEquals(1, repository.getAll().size)
+            assertEquals(CameraTransportType.USB, repository.getAll().single().transportType)
+            assertEquals("selected-album", repository.getAll().single().albumId)
+        } finally {
+            repository.close()
+            context.deleteDatabase(databaseName)
+        }
+    }
+
+    @Test
+    fun versionSevenQueueUpgradePreservesRowsAndUsbTransport() {
+        val context = RuntimeEnvironment.getApplication()
+        val databaseName = "camera_operator_queue_v7_test.db"
+        context.deleteDatabase(databaseName)
+        val versionSeven = object : SQLiteOpenHelper(context, databaseName, null, 7) {
+            override fun onCreate(db: SQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE transfers (
+                      id TEXT PRIMARY KEY NOT NULL,
+                      upload_id TEXT NOT NULL UNIQUE,
+                      batch_id TEXT NOT NULL,
+                      album_id TEXT NOT NULL,
+                      album_name TEXT NOT NULL,
+                      source TEXT NOT NULL,
+                      source_object_id TEXT NOT NULL,
+                      file_name TEXT NOT NULL,
+                      mime_type TEXT NOT NULL,
+                      size_bytes INTEGER,
+                      source_captured_at INTEGER,
+                      temporary_file_path TEXT,
+                      state TEXT NOT NULL,
+                      progress_bytes INTEGER NOT NULL,
+                      attempts INTEGER NOT NULL,
+                      created_at INTEGER NOT NULL,
+                      updated_at INTEGER NOT NULL,
+                      last_error TEXT,
+                      import_started INTEGER NOT NULL DEFAULT 0,
+                      transport_type TEXT NOT NULL DEFAULT 'NONE'
+                    )
+                    """.trimIndent(),
+                )
+                db.insertOrThrow(
+                    "transfers",
+                    null,
+                    ContentValues().apply {
+                        put("id", "usb-row")
+                        put("upload_id", "usb-upload")
+                        put("batch_id", "usb-batch")
+                        put("album_id", "album-id")
+                        put("album_name", "Wedding")
+                        put("source", PhotoSource.CAMERA.name)
+                        put("source_object_id", "5:23")
+                        put("file_name", "usb.jpg")
+                        put("mime_type", "image/jpeg")
+                        put("size_bytes", 512L)
+                        put("source_captured_at", 123L)
+                        put("state", QueueState.READY_TO_UPLOAD.name)
+                        put("progress_bytes", 512L)
+                        put("attempts", 0)
+                        put("created_at", 1L)
+                        put("updated_at", 1L)
+                        put("import_started", 0)
+                        put("transport_type", CameraTransportType.USB.name)
+                    },
+                )
+            }
+
+            override fun onUpgrade(db: SQLiteDatabase, oldVersion: Int, newVersion: Int) = Unit
+        }
+
+        try {
+            versionSeven.writableDatabase
+            versionSeven.close()
+            val repository = TransferQueueRepository(context, databaseName)
+            try {
+                val upgraded = repository.getBatch("usb-batch").single()
+                assertEquals("usb-row", upgraded.id)
+                assertEquals("5:23", upgraded.sourceObjectId)
+                assertEquals(CameraTransportType.USB, upgraded.transportType)
+                assertFalse(repository.hasAutoUploadBaseline("not-yet-baselined"))
+            } finally {
+                repository.close()
+            }
+        } finally {
+            versionSeven.close()
             context.deleteDatabase(databaseName)
         }
     }

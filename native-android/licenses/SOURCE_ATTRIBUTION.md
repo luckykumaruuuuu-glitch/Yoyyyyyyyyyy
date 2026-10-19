@@ -14,9 +14,11 @@
 
 The Gradle application links against this LGPL-2.1 library. The source project includes the library source and license so the library can be modified and rebuilt. This notice is a technical attribution record, not legal advice.
 
-## SonyPhotoTransfer application
+## Sony USB camera-control library (MIT)
 
-- Repository: https://github.com/Morning-Sea/SonyPhotoTransfer
-- Inspected revision: `6d39accd8c0b366be2efb4c72f11234aba015d51`
-- The upstream repository's app is MIT-licensed, but none of its MIT-covered app/UI source files are copied into this project.
-- Its README, AGENTS.md, project structure, PTP/IP implementation and build setup were used as technical references only.
+- Source project: `sony-camera-android`, supplied as `sony-camera-android-main.zip`.
+- Upstream project copyright: © 2026 Andrew Gallo. The source archive does not identify a commit hash or a public repository URL; no revision is inferred here.
+- Reused source: Sony USB/PTP transport, Sony PTP operations and card-object parsing, USB connection manager, and service/client lifecycle, integrated under `native-android/sony-usb/`.
+- Adaptations include the WED Faces app's transport adapter and queue routing, the standard read-only card-browsing operations and PTP metadata parser, streamed original-file transfer, and endpoint-compatibility checks. The reference Compose demo UI is not copied.
+- License: MIT. The complete upstream notice is retained at `SONY_USB_MIT_LICENSE.txt`; the same copyright and license terms apply to the reused source.
+- The reference README reports that its engine was tested on the Sony α6600 (ILCE-6600). That is not a physical test of this app's integrated workflow; camera compatibility remains unverified until tested here.

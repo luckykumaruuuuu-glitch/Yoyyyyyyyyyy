@@ -13,6 +13,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.wedfaces.cameraoperator.data.TransferQueueRepository
 import com.wedfaces.cameraoperator.model.Album
+import com.wedfaces.cameraoperator.model.CameraFileSupport
 import com.wedfaces.cameraoperator.model.CameraStorage
 import com.wedfaces.cameraoperator.model.CameraPhoto
 import com.wedfaces.cameraoperator.model.CameraTransportType
@@ -530,15 +531,17 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private suspend fun switchCameraTransport(target: CameraTransportType): Boolean {
         val current = _state.value
         if (current.cameraTransport == target) return true
-        if (services.queue.getAll().any { it.state == QueueState.DOWNLOADING }) {
+        if (services.queue.getAll().any {
+                it.source == PhotoSource.CAMERA && it.state == QueueState.DOWNLOADING
+            }
+        ) {
             _state.value = current.copy(
                 error = "Wait for the current camera original transfer to finish before switching connection modes.",
             )
             return false
         }
         if (current.cameraTransport == CameraTransportType.USB) {
-            services.usbCamera.disconnect()
-            delay(500)
+            services.usbCamera.disconnectAndWait()
         }
         if (current.cameraConnected && current.cameraTransport == CameraTransportType.WIFI) {
             services.camera.disconnect()
@@ -628,6 +631,14 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     fun navigateCameraUp() {
         if (_state.value.folderPath.isEmpty()) return
         _state.value = _state.value.copy(folderPath = _state.value.folderPath.dropLast(1))
+        refreshCamera()
+    }
+
+    fun navigateCameraToPath(folderCount: Int) {
+        val path = _state.value.folderPath
+        val boundedCount = folderCount.coerceIn(0, path.size)
+        if (boundedCount == path.size) return
+        _state.value = _state.value.copy(folderPath = path.take(boundedCount))
         refreshCamera()
     }
 
@@ -966,8 +977,21 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun disconnectCamera() = viewModelScope.launch {
+        if (services.queue.getAll().any {
+                it.source == PhotoSource.CAMERA && it.state == QueueState.DOWNLOADING
+            }
+        ) {
+            _state.value = _state.value.copy(
+                error = "A camera original is still downloading. Stop its batch in Queue before disconnecting.",
+            )
+            return@launch
+        }
         if (_state.value.cameraTransport == CameraTransportType.USB) {
-            services.usbCamera.disconnect()
+            _state.value = _state.value.copy(
+                cameraBusy = true,
+                cameraNetworkMessage = "Finishing the current PTP operation and safely releasing the USB session…",
+            )
+            services.usbCamera.disconnectAndWait()
         } else {
             services.camera.disconnect()
             services.cameraNetwork.release()
@@ -975,6 +999,7 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
         }
         cameraPhotoCache.clear()
         _state.value = _state.value.copy(
+            cameraBusy = false,
             cameraConnected = false,
             cameraModel = null,
             photos = emptyList(),
@@ -1209,23 +1234,16 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     private fun isSupported(photo: CameraPhoto): Boolean {
-        if (photo.isFolder) return false
-        val extension = photo.fileName.substringAfterLast('.', "").lowercase()
-        return extension in SUPPORTED_EXTENSIONS
+        return !photo.isFolder && CameraFileSupport.isSupported(photo.fileName)
     }
 
     private fun safeFileName(value: String): String {
         val cleaned = value.replace(Regex("[^A-Za-z0-9._-]"), "_").take(140)
-        return cleaned.takeIf { it.contains('.') && it.substringAfterLast('.').lowercase() in SUPPORTED_EXTENSIONS }
+        return cleaned.takeIf(CameraFileSupport::isSupported)
             ?: "image-${UUID.randomUUID()}.jpg"
     }
 
-    private fun mimeTypeFor(name: String): String? = when (name.substringAfterLast('.', "").lowercase()) {
-        "jpg", "jpeg" -> "image/jpeg"
-        "png" -> "image/png"
-        "webp" -> "image/webp"
-        else -> null
-    }
+    private fun mimeTypeFor(name: String): String? = CameraFileSupport.mimeType(name)
 
     private fun displayName(uri: Uri): String? =
         getApplication<Application>().contentResolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)
@@ -1243,9 +1261,5 @@ class AppViewModel(application: Application) : AndroidViewModel(application) {
     private companion object {
         const val THUMBNAIL_CACHE_SIZE = 8
         const val AUTO_UPLOAD_FALLBACK_INTERVAL_MS = 90_000L
-        val SUPPORTED_EXTENSIONS = setOf("jpg", "jpeg", "png", "webp")
-        val SUPPORTED_MIME_TYPES = setOf("image/jpeg", "image/png", "image/webp")
-        val JPEG_EXTENSIONS = setOf("jpg", "jpeg")
-        val RAW_EXTENSIONS = setOf("arw", "cr2", "cr3", "nef", "dng", "raw")
     }
 }

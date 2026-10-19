@@ -111,6 +111,8 @@ class UsbCameraConnectionManager(
     private var ptpCamera: SonyPtpCamera? = null
     private var liveviewJob: Job? = null
     private var eventMonitorJob: Job? = null
+    @Volatile private var teardownJob: Job? = null
+    @Volatile private var cancelledConnectJob: Job? = null
     private var isLiveviewActive = false
 
     // In-flight connect job. Tracking it lets disconnect / detach cancel a
@@ -528,6 +530,22 @@ class UsbCameraConnectionManager(
     }
 
     /**
+     * Disconnect and wait until the session-close handshake, interface release,
+     * and device close have completed. Callers switching transports can use
+     * this to avoid overlapping USB teardown with a Wi-Fi camera session.
+     */
+    suspend fun disconnectAndWait() {
+        disconnect()
+        awaitDisconnect()
+    }
+
+    suspend fun awaitDisconnect() {
+        cancelledConnectJob?.join()
+        cancelledConnectJob = null
+        teardownJob?.join()
+    }
+
+    /**
      * Permanently tear down this engine. Called by the owning service in
      * onDestroy: unregisters the USB receiver, releases USB resources, and
      * cancels all coroutines. The instance must not be used afterwards.
@@ -570,8 +588,12 @@ class UsbCameraConnectionManager(
         // Cancel any in-flight connect so its finally-block unwinds the
         // resources it allocated rather than silently committing them after
         // we've already decided to tear down.
-        connectJob?.cancel()
+        val pendingConnect = connectJob
         connectJob = null
+        if (pendingConnect != null) {
+            cancelledConnectJob = pendingConnect
+            pendingConnect.cancel()
+        }
 
         val camera = ptpCamera
         val conn = usbConnection
@@ -590,7 +612,7 @@ class UsbCameraConnectionManager(
         // Run the teardown on a scope that survives engine.destroy()'s
         // scope.cancel — otherwise endSession can be cancelled before its
         // USB transactions reach the camera.
-        teardownScope.launch {
+        teardownJob = teardownScope.launch {
             Log.d(TAG, "USB teardown: ending camera session")
             try {
                 // Graceful end: release Sony priority + PTP CloseSession so
@@ -709,6 +731,10 @@ class UsbCameraConnectionManager(
      * interfaces or connections on partial failure.
      */
     private suspend fun connectToDevice(device: UsbDevice) = withContext(Dispatchers.IO) {
+        // Do not claim a fresh PTP interface until any previous graceful
+        // session teardown has released the connection.
+        cancelledConnectJob?.join()
+        teardownJob?.join()
         var localConn: UsbDeviceConnection? = null
         var localIface: UsbInterface? = null
         var ifaceClaimed = false
@@ -877,33 +903,34 @@ class UsbCameraConnectionManager(
     private fun hasPtpInterface(device: UsbDevice): Boolean {
         for (i in 0 until device.interfaceCount) {
             val iface = device.getInterface(i)
-            // PTP/MTP uses class 6 (Still Image), but some devices use class 255 (vendor-specific)
-            if (iface.interfaceClass == PtpConstants.USB_CLASS_PTP ||
-                iface.interfaceClass == 255) return true
+            if (UsbPtpInterfaceMatcher.isCompatible(
+                    iface.interfaceClass,
+                    (0 until iface.endpointCount).map { endpointIndex ->
+                        iface.getEndpoint(endpointIndex).let { endpoint ->
+                            UsbPtpInterfaceMatcher.EndpointDescriptor(endpoint.type, endpoint.direction)
+                        }
+                    },
+                )
+            ) return true
         }
         return false
     }
 
     private fun findPtpInterface(device: UsbDevice): UsbInterface? {
-        // Prefer class 6 (standard PTP/MTP)
-        for (i in 0 until device.interfaceCount) {
-            val iface = device.getInterface(i)
-            if (iface.interfaceClass == PtpConstants.USB_CLASS_PTP) return iface
-        }
-        // Fallback: first interface with bulk endpoints (vendor-specific PTP)
-        for (i in 0 until device.interfaceCount) {
-            val iface = device.getInterface(i)
-            var hasBulkIn = false
-            var hasBulkOut = false
-            for (e in 0 until iface.endpointCount) {
-                val ep = iface.getEndpoint(e)
-                if (ep.type == UsbConstants.USB_ENDPOINT_XFER_BULK) {
-                    if (ep.direction == UsbConstants.USB_DIR_IN) hasBulkIn = true
-                    if (ep.direction == UsbConstants.USB_DIR_OUT) hasBulkOut = true
+        fun isCompatible(iface: UsbInterface) = UsbPtpInterfaceMatcher.isCompatible(
+            iface.interfaceClass,
+            (0 until iface.endpointCount).map { endpointIndex ->
+                iface.getEndpoint(endpointIndex).let { endpoint ->
+                    UsbPtpInterfaceMatcher.EndpointDescriptor(endpoint.type, endpoint.direction)
                 }
-            }
-            if (hasBulkIn && hasBulkOut) return iface
+            },
+        )
+
+        val interfaces = (0 until device.interfaceCount).map { device.getInterface(it) }
+        return interfaces.firstOrNull {
+            it.interfaceClass == PtpConstants.USB_CLASS_PTP && isCompatible(it)
+        } ?: interfaces.firstOrNull {
+            it.interfaceClass == 255 && isCompatible(it)
         }
-        return null
     }
 }

@@ -1,0 +1,418 @@
+TASK: Integrate Sony USB-PTP/OTG into the Existing WED Faces Camera Operator App
+
+You are provided with two source archives:
+
+1. "WED-Faces-Camera-Operator-source-final_2.zip" — the existing main Android app. Extract and work inside its "native-android/" project. This is the application we must preserve and improve.
+2. "sony-camera-android-main.zip" — a Sony USB camera-control project and library. Use it as the reference and code source for Sony USB-PTP connectivity, not as a replacement app.
+
+Your task is to implement the complete required Sony USB camera workflow inside the existing WED Faces Camera Operator app.
+
+Do not create a separate app. Do not replace the existing UI or server system. Do not remove existing features. Focus only on Sony cameras. Canon and Nikon are out of scope.
+
+1. Inspect Both Projects First
+
+Read the source code, manifests, Gradle files, existing documentation, tests, API client, camera gateway, ViewModel, Compose UI, transfer queue, foreground services, and workers before making changes.
+
+The existing WED Faces app already contains:
+
+- WED Faces authentication and token refresh.
+- Server URL configuration and album selection.
+- Camera Wi-Fi PTP/IP connectivity.
+- Camera metadata and thumbnail browsing over Wi-Fi.
+- Selected-original download, upload queue, progress, retry, import status, and background upload workers.
+- Phone-folder watch and a separate Test Mode.
+
+The current main app does not yet have a verified USB/OTG camera transport.
+
+The Sony USB reference project provides a USB Host/PTP connection engine, Sony-specific camera operations, live-view support, and app-initiated photo capture/download. Its README reports testing on the Sony α6600. Other Sony models must be treated as unverified until tested.
+
+Important: Do not assume that the Sony library already supports browsing every card folder or automatically detecting every photo taken with the physical camera shutter. Inspect and implement these missing capabilities.
+
+After the initial inspection, continue with the implementation without asking for permission at each step. Ask only if a genuinely blocking decision cannot be determined from the source or requirements.
+
+2. Preserve the Existing Application
+
+Keep the existing:
+
+- Application ID, package name, Android Compose design, and Camera / Queue / Settings navigation.
+- Server sign-in, token refresh, server URL, album selection, API endpoints, multipart fields, and import-status processing.
+- Persistent queue, per-file errors, retries, background uploads, and notifications.
+- Wi-Fi camera connection mode.
+- Phone-folder watch and Test Mode.
+
+Do not invent new backend endpoints or change the existing server API contract.
+
+Integrate the USB camera path into the existing upload pipeline. USB downloads must use the existing queue and import system rather than a separate upload implementation.
+
+Preserve the existing LGPL-2.1 notices for bundled PTP/IP code and retain the Sony USB project's MIT license and copyright notice if its code is reused.
+
+3. USB Cable and OTG Connection
+
+Implement a real wired USB-PTP connection using Android's USB Host API and the Sony reference library where appropriate.
+
+Physical connection flow
+
+1. The user connects the Sony camera to the phone with a data-capable USB cable and the correct OTG adapter, or a compatible USB-C-to-USB-C data cable.
+2. Check whether the Android phone supports USB Host/OTG. If it does not, display a clear compatibility message.
+3. The camera must be powered on and configured for the required USB mode, normally PC Remote or another mode confirmed to work on that camera model.
+4. Detect the attached device through "UsbManager" and verify that it exposes a compatible USB/PTP interface and the required endpoints.
+5. Show Android's actual USB permission dialog. Never pretend permission was granted.
+6. After permission is granted, open the USB device, claim its correct interface, initialize the PTP transport, open the PTP session, perform the Sony-specific initialization, identify the model, and enumerate the available camera storage.
+7. Show "Connected" only after the connection and initialization genuinely succeed.
+8. Keep the USB session owned by one component. Do not let multiple services or adapters try to open the same USB interface simultaneously.
+
+The phone's USB connection is for camera communication. Server uploads must continue over the phone's normal internet connection, independently of the USB connection.
+
+Connection status and error handling
+
+Display useful connection states:
+
+- No USB camera detected
+- USB device detected
+- Waiting for permission
+- Connecting
+- Initializing camera
+- Connected / Ready
+- Reading memory card
+- Downloading original
+- Reconnecting
+- Connection failed
+
+Show actionable messages for unsupported phones, possible charge-only cables, denied USB permission, incompatible PTP interfaces, camera sleep/off, incorrect USB mode, another application holding the interface, missing card, timeouts, and connection loss.
+
+Disconnect and recovery
+
+The "Disconnect" button must stop camera polling, finish or cancel in-progress work safely, release USB resources, close the session appropriately, and return to the disconnected state.
+
+If the cable is unplugged during a transfer, mark the affected item as retryable or failed. Never mark an incomplete transfer as successful.
+
+Implement safe reconnect behavior where possible. Reinitialize the PTP session after reconnecting and prevent duplicate uploads.
+
+Use an appropriate foreground service and integrate the Sony library's connection lifecycle cleanly. Do not create two independent USB-session owners.
+
+4. Support Both USB and Existing Wi-Fi Modes
+
+Add a clear way to choose:
+
+- "USB Cable"
+- "Camera Wi-Fi"
+
+The existing Wi-Fi implementation must continue to work as before.
+
+The current camera gateway assumes a Wi-Fi "Network"; it cannot simply be used unchanged for USB. Carefully introduce a common camera-browser/download interface or transport manager that supports both connections.
+
+The common camera workflow must support:
+
+- Connect and disconnect.
+- Connection status and camera identification.
+- Storage enumeration.
+- Folder listing and navigation.
+- File metadata and thumbnails/previews.
+- Downloading selected full-resolution originals.
+- Detecting newly created photos where supported.
+- Safe error handling and retries.
+
+Persist the transport type and sufficient camera/storage/object identity in transfer records. Ensure that a photo selected over USB is downloaded through USB, never accidentally through the Wi-Fi adapter.
+
+If the database schema needs additional fields, implement a safe migration and preserve existing queue records.
+
+Serialize USB PTP operations through a single session lock. Do not execute simultaneous PTP commands against the same transaction stream.
+
+5. Browse the Entire Accessible Camera Card
+
+The user needs to open the Sony camera's memory card and navigate through its actual folder structure.
+
+This is the camera card, not the phone's Gallery or the existing Phone Folder Watch.
+
+Storage and folders
+
+1. Enumerate available camera storages using PTP storage operations.
+2. If more than one storage is exposed, allow the user to choose it.
+3. Read folder and file metadata while preserving parent-child relationships. Use appropriate PTP operations such as "GetStorageIDs", "GetObjectHandles", and "GetObjectInfo", or the correct operations supported by the camera.
+4. Recognize folder/association objects separately from image files.
+5. Display a real folder browser with breadcrumbs, current-folder information, a back/up button, refresh, folders, and image entries.
+6. Tapping a folder opens it. Tapping an image opens its preview.
+7. Support selecting one image, multiple images, all supported images in the current folder, or a complete folder including descendants where the camera exposes the hierarchy.
+8. Show the number of photos selected when selecting a folder. Exclude folders themselves and unsupported files from upload selection.
+9. Preserve selection while navigating where possible. Refresh must not silently clear valid selections.
+10. Handle multiple storage IDs and avoid collisions in object handles.
+
+Do not flatten the entire memory card and discard the folder hierarchy.
+
+Do not issue delete, rename, format, write, or camera-card modification commands. Browsing is read-only; uploading is a separate read operation.
+
+If the camera does not expose the complete folder hierarchy through its supported PTP mode, report this limitation honestly. Do not fabricate folders or claim complete card access without verification.
+
+Supported image formats
+
+The existing WED Faces backend documents JPG/JPEG, PNG, and WEBP uploads.
+
+Allow selection and upload of formats accepted by the existing server. Other entries may be shown but must be marked unsupported and disabled for upload, with a useful explanation. Examples include Sony RAW/ARW, video, and unknown formats unless the backend contract explicitly supports them.
+
+A failure to read one file's metadata must not prevent other files from appearing.
+
+6. Camera Screen: Exact Button Behavior
+
+Implement the following buttons and states in the existing Camera screen.
+
+Connection controls
+
+"USB Cable"
+
+- Switches the Camera screen to USB connection mode.
+- Shows USB attachment, permission, connection, and error states.
+- Does not start a second USB session if one already exists.
+
+"Camera Wi-Fi"
+
+- Shows the existing Wi-Fi connection controls.
+- Must preserve the current behavior.
+
+"Connect USB Camera"
+
+- Available when a compatible device is attached.
+- Requests permission if needed.
+- Opens and initializes PTP.
+- Displays progress and disables duplicate connection attempts while connecting.
+
+"Rescan USB"
+
+- Checks for attached devices and refreshes detection.
+- Must not open duplicate sessions.
+
+"Refresh"
+
+- Refreshes the current storage/folder listing and metadata.
+- Loads thumbnails as needed.
+- Does not retrieve every full-resolution original just to display the grid.
+
+"Disconnect"
+
+- Closes the active transport safely and updates status.
+- Does not clear existing queue history or delete camera photos.
+
+Folder and selection controls
+
+"Storage/Card"
+
+- Opens the selected camera storage.
+
+"Back/Up"
+
+- Navigates to the parent folder.
+- Disabled at the root.
+
+"Open Folder"
+
+- Opens the tapped folder and updates the breadcrumb.
+
+"Select Folder"
+
+- Selects supported images in the current folder, recursively through child folders where supported.
+- Shows how many supported images will be selected.
+
+"Select All"
+
+- Selects all supported images in the current visible list.
+
+"Clear Selection"
+
+- Clears the current selection and updates the count.
+
+Photo tile
+
+- Displays thumbnail if available, filename, and selected state.
+- Uses a separate selection control so users can preview without accidentally changing selection.
+
+Photo preview
+
+- Opens when the user taps an image.
+- Shows the best available preview, filename, size, capture date/time when available, format, and upload-support status.
+- Provides "Select/Unselect", "Upload Now", "Save to Phone", and "Close/Back".
+
+Use the camera's PTP thumbnail operation or another real thumbnail source when supported. If a preview cannot be retrieved, show a placeholder and allow supported files to remain selectable.
+
+Never upload a thumbnail or live-view bitmap as though it were the original photograph.
+
+7. Manual Upload
+
+Provide "Upload Selected (N)" and "Upload Now" in the single-photo preview.
+
+Before starting an upload, verify that the user is signed in and has selected a destination WED Faces album. If either is missing, explain that Settings must be completed first.
+
+For camera photos:
+
+1. Add the selected files to the existing persistent queue.
+2. Download the full-resolution originals through the correct active transport.
+3. Write each original to the existing app-private transfer staging area.
+4. Verify that each download completed before setting the item to upload-ready.
+5. Enqueue each completed original immediately into the existing WorkManager upload/import pipeline.
+6. Use the existing API, status polling, queue states, retry behavior, and import reconciliation.
+
+Preserve the original image bytes and EXIF metadata. Do not resize, recompress, or replace the original with a preview.
+
+Use bounded-memory or file-based transfer where feasible. Avoid loading multiple large camera originals into "Bitmap" or large in-memory "ByteArray" objects.
+
+Show real per-file states and progress in the existing Queue screen.
+
+A failed file must not block unrelated successful files. If the internet is temporarily unavailable after a successful download, keep the private staged file for retry.
+
+If USB disconnects before the original is retrieved, mark the item as retryable. Prevent duplicate server uploads/imports when retrying.
+
+Never report success until the existing server APIs confirm it.
+
+8. Save to Phone Gallery
+
+"Save to Phone" is an explicit user action.
+
+- Save the selected original into Android's public Gallery/Photos, for example under "Pictures/WED Faces".
+- Use "MediaStore" and Android-version-appropriate behavior.
+- Request legacy storage permission only if the Android version requires it and only when the user chooses Save.
+- Preserve original image bytes and metadata where supported.
+- Handle filename conflicts safely.
+- Show success or failure feedback.
+
+Do not save a photo to public Gallery merely because it was previewed or uploaded. Do not delete or modify the camera original.
+
+Support saving the currently previewed photo and, if a multi-selection save action is provided, selected photos.
+
+Saving to Gallery must remain separate from the upload status.
+
+9. Auto Upload from the Physical Camera Shutter
+
+This is a core requirement. Do not confuse it with taking a picture through an in-app remote shutter button.
+
+The photographer will normally press the physical shutter button on the Sony camera. The app must detect newly created card images and process them according to the Auto Upload setting.
+
+Detection implementation
+
+First inspect the actual Sony USB reference APIs and events.
+
+The reference event "CameraEvent.PhotoCaptured(Bitmap)" alone is not proof that every physical-shutter photo is detected, nor does a bitmap represent the full-resolution original.
+
+Implement a genuine detection strategy using the capabilities supported by the target body:
+
+- Listen for a reliable PTP "ObjectAdded" or equivalent camera event when available.
+- Where required, use serialized, bounded polling of object handles, metadata, or Sony's transfer queue.
+- Avoid aggressive polling that blocks downloads or overwhelms the camera.
+- Verify whether physical-shutter capture detection works on the actual target model.
+
+"Auto Upload" toggle
+
+- Display a clear "Auto Upload" ON/OFF switch.
+- Default to OFF unless the user explicitly saved a prior preference.
+- Require a ready camera connection, valid sign-in, and a destination album before turning it on.
+- If any prerequisite is missing, explain the missing step and do not silently enable it.
+
+When Auto Upload is enabled:
+
+1. Record a baseline of the images that already exist on the card.
+2. Detect images positively identified as new after Auto Upload was enabled.
+3. Add the new images to the Camera screen and enqueue supported originals automatically.
+4. Download each original into private temporary storage, verify completion, and immediately send it through the existing upload/import queue.
+5. Show real progress and final import status.
+6. Retain retryable errors when connection or upload fails.
+
+Do not upload old card photos automatically just because the camera connected or the Auto Upload switch was enabled. Existing photos are handled through manual selection.
+
+Store a stable identity using the camera identity, storage ID, PTP handle and/or metadata. Repeated events, polling, reconnects, process restarts, or retries must not cause duplicate uploads.
+
+When Auto Upload is OFF, new physical-shutter photos should appear in the Camera screen for manual selection and "Upload Now" / "Save to Phone". They must not be automatically uploaded.
+
+Auto Upload must not save images to public Gallery automatically. Upload and Save are independent actions. Private temporary staging is allowed for transfer reliability.
+
+If the camera does not reliably expose physical-shutter-created images over this USB mode, document it as unverified rather than claiming success.
+
+10. Original Transfer, Memory, and Privacy
+
+- Never convert the original photo to a bitmap and upload that bitmap.
+- Never use a live-view frame or thumbnail as the uploaded original.
+- Use a file-based transfer approach with bounded memory for large originals where practical.
+- Use unique safe filenames and an incomplete/temporary staging process.
+- Only mark a file upload-ready after a complete successful download.
+- Delete partial files after failed transfers; retain completed staged files for retry; clean temporary files following the existing app's successful-import lifecycle.
+- Use cancellation-safe coroutines, timeouts, a single PTP command mutex, and appropriate recovery for stale handles, sleeping camera, card changes, unplugged cables, and failed transfers.
+- Keep authentication tokens and secrets in the existing secure store. Do not log passwords, access tokens, authorization headers, or image data.
+
+11. Settings, Queue, and App Consistency
+
+Keep the existing Settings features, including server URL, account, album selection, phone-folder watch, Test Mode, and diagnostics.
+
+Manual and automatic uploads must use the album currently selected in Settings.
+
+Display the active mode and status clearly, for example:
+
+- "USB — Sony ILCE-xxxx"
+- "Wi-Fi — Sony camera"
+- "Not connected"
+- "Auto Upload ON/OFF"
+
+All real transfers must appear in the current Queue screen with real progress, retry, local stop/cancel behavior, and server import results.
+
+Every button and switch must perform its advertised action. Do not ship decorative/inert controls, fake progress, fabricated thumbnails, or hard-coded success messages.
+
+Do not run simultaneous USB and Wi-Fi operations against the same camera. If switching modes while a transfer is active, handle it safely and explain the state to the user.
+
+12. Licenses and Attribution
+
+- Retain the Sony reference project's MIT license and copyright when reusing its code.
+- Retain the main app's existing LGPL-2.1 source headers, license file, and source attribution.
+- Do not copy the reference demo UI into the main app.
+- Record new third-party source files and code modifications in the attribution documentation.
+
+13. Tests and Verification
+
+Add tests for:
+
+1. USB device detection and permission grant/denial.
+2. Connection/disconnection, safe session cleanup, and reconnection.
+3. Storage and folder parsing, parent-child navigation, and multi-storage identifiers.
+4. File-vs-folder recognition and unsupported formats.
+5. Thumbnail/preview failures without downloading every original.
+6. Single selection, multi-selection, Select All, Clear, Select Folder, and folder navigation.
+7. Correct queue routing between USB and Wi-Fi transports.
+8. Backward-compatible queue database migration.
+9. Original download completion, partial-file cleanup, cancellation, retry, and reconnect behavior.
+10. Auto Upload OFF versus ON behavior.
+11. No automatic upload of existing files when enabling Auto Upload.
+12. Deduplication of repeated PTP events and reconnects.
+13. Manual upload and Auto Upload using the correct selected album.
+14. Save to Phone only on explicit user action.
+15. Preservation of existing sign-in, album selection, Wi-Fi browsing, phone-folder watch, Test Mode, upload/import, retry, and settings behavior.
+
+Run these commands from the "native-android/" directory:
+
+./gradlew :app:assembleDebug
+./gradlew :app:testDebugUnitTest
+./gradlew :app:lintDebug
+
+Do not claim a command passed unless it actually ran and succeeded. If the Android SDK or physical camera is unavailable, state the limitation clearly and complete all meaningful checks that are possible.
+
+Physical camera test
+
+On a real OTG-capable Android phone and a real Sony camera, preferably start with the reference project's tested α6600 and then test the user's actual model:
+
+1. Connect the camera using a compatible data cable/OTG adapter and grant USB permission.
+2. Confirm model detection and successful PTP initialization.
+3. Browse the card folders, open a folder, preview a photo, select one and multiple photos, select a folder, and clear selection.
+4. Manually upload selected originals and verify import results on the WED Faces server.
+5. Save an image to the phone Gallery and confirm it is saved only after choosing Save.
+6. Enable Auto Upload, press the camera's physical shutter, and verify that the new original is detected and uploaded exactly once without being saved to public Gallery.
+7. Turn Auto Upload OFF, take another physical photo, and confirm it appears for manual action without automatic upload.
+8. Disconnect/reconnect during browsing and transfers; verify safe recovery and no duplicate uploads.
+9. Confirm uploads still use the phone's normal internet connection while the camera remains connected by USB.
+10. Confirm existing Wi-Fi and non-camera features still work.
+
+14. Final Deliverables
+
+Provide:
+
+- The list of changed files and why they changed.
+- A simple architecture description explaining USB, Wi-Fi, folder browser, Auto Upload detection, private staging, the queue, and server upload.
+- A button-by-button explanation of the implemented UI.
+- Exact build/test/lint results.
+- The APK path if a build succeeds.
+- A camera compatibility table for the models actually tested, including connection, folder browsing, preview, physical-shutter detection, manual upload, Auto Upload, Save to Phone, and limitations.
+- A clear list separating features that are implemented, features that passed software tests, and features still unverified on physical hardware.
+
+Final instruction: implement the real functionality, not just the UI. Preserve the existing WED Faces application, add Sony USB-PTP as a supported transport, use the existing upload/import system, and never claim physical-camera behavior works until it has been verified or clearly label it as untested.

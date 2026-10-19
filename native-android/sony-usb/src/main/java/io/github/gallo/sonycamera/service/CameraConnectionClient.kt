@@ -147,6 +147,15 @@ class CameraConnectionClient(
         binderFlow.value?.disconnect()
     }
 
+    suspend fun disconnectAndWait() {
+        val binder = binderFlow.value
+        if (binder == null) {
+            disconnect()
+            return
+        }
+        binder.disconnectAndWait()
+    }
+
     override suspend fun startLiveview(): CameraOperationResult =
         binderFlow.value?.startLiveview()
             ?: CameraOperationResult.Failure("Camera service not ready")

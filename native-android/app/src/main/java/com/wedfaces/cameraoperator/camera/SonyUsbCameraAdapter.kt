@@ -34,7 +34,14 @@ class SonyUsbCameraAdapter(
         usbManager?.deviceList?.values?.firstOrNull { device ->
             device.vendorId == SONY_VENDOR_ID && (0 until device.interfaceCount).any { index ->
                 val usbInterface = device.getInterface(index)
-                usbInterface.interfaceClass == USB_CLASS_PTP || usbInterface.interfaceClass == USB_CLASS_VENDOR_SPECIFIC
+                UsbPtpInterfaceMatcher.isCompatible(
+                    usbInterface.interfaceClass,
+                    (0 until usbInterface.endpointCount).map { endpointIndex ->
+                        usbInterface.getEndpoint(endpointIndex).let { endpoint ->
+                            UsbPtpInterfaceMatcher.EndpointDescriptor(endpoint.type, endpoint.direction)
+                        }
+                    },
+                )
             }
         }
 
@@ -43,6 +50,7 @@ class SonyUsbCameraAdapter(
 
     fun connect() = client.connectToCamera()
     fun disconnect() = client.disconnect()
+    suspend fun disconnectAndWait() = client.disconnectAndWait()
     fun isReady() = client.isReady()
 
     fun cameraIdentity(): String {
@@ -170,8 +178,6 @@ class SonyUsbCameraAdapter(
     companion object {
         private const val MAX_THUMBNAIL_BYTES = 512 * 1024
         private const val SONY_VENDOR_ID = 0x054C
-        private const val USB_CLASS_PTP = 6
-        private const val USB_CLASS_VENDOR_SPECIFIC = 255
     }
 }
 

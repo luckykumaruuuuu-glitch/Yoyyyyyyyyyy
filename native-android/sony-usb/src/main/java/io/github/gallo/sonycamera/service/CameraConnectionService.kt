@@ -128,6 +128,10 @@ class CameraConnectionService : Service() {
         ) = engine.downloadCardObject(handle, output, onProgress)
         fun isReady() = engine.isReady()
         fun disconnect() = this@CameraConnectionService.handleDisconnect()
+        suspend fun disconnectAndWait() {
+            this@CameraConnectionService.handleDisconnect()
+            engine.awaitDisconnect()
+        }
     }
 
     private lateinit var engine: UsbCameraConnectionManager
